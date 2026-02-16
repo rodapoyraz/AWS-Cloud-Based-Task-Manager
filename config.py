@@ -1,10 +1,11 @@
 import os
-from dotenv import load_dotenv
-
-load_dotenv()
 
 class Config:
     COSMOS_ENDPOINT = os.getenv("COSMOS_ENDPOINT")
     COSMOS_KEY = os.getenv("COSMOS_KEY")
-    COSMOS_DATABASE = os.getenv("COSMOS_DATABASE")
-    COSMOS_CONTAINER = os.getenv("COSMOS_CONTAINER")
+    COSMOS_DB_NAME = os.getenv("COSMOS_DB_NAME")
+    COSMOS_CONTAINER_NAME = os.getenv("COSMOS_CONTAINER_NAME")
+    COSMOS_PARTITION_KEY = os.getenv("COSMOS_PARTITION_KEY", "/id")
+
+    BLOB_CONNECTION_STRING = os.getenv("BLOB_CONNECTION_STRING")
+    BLOB_CONTAINER_NAME = os.getenv("BLOB_CONTAINER_NAME", "taskfiles")
