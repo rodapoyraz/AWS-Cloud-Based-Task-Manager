@@ -1,20 +1,29 @@
 {% extends "base.html" %}
 {% block title %}Register{% endblock %}
-{% block content %}
-<h1 class="h4 mb-3">Register</h1>
-<form method="post" class="card p-3" style="max-width: 420px;">
-  <div class="mb-2">
-    <label class="form-label">Email</label>
-    <input class="form-control" name="email" type="email" required>
-  </div>
-  <div class="mb-3">
-    <label class="form-label">Password</label>
-    <input class="form-control" name="password" type="password" required>
-  </div>
-  <button class="btn btn-primary w-100">Create account</button>
-  <div class="mt-3 text-center">
-    <a href="{{ url_for('routes.login') }}">Back to login</a>
-  </div>
-</form>
-{% endblock %}
 
+{% block content %}
+<div class="card p-4" style="max-width:520px;">
+  <h1 class="h4 mb-3">Register</h1>
+
+  <form method="post">
+    <div class="mb-2">
+      <label class="form-label">User ID (short)</label>
+      <input class="form-control" name="user_code" required placeholder="e.g. roda, it-admin-01">
+      <div class="form-text">3–20 chars: a-z, 0-9, _ or -</div>
+    </div>
+
+    <div class="mb-2">
+      <label class="form-label">Email</label>
+      <input class="form-control" name="email" type="email" required>
+    </div>
+
+    <div class="mb-3">
+      <label class="form-label">Password</label>
+      <input class="form-control" name="password" type="password" required>
+    </div>
+
+    <button class="btn btn-primary" type="submit">Create account</button>
+    <a class="btn btn-link" href="{{ url_for('routes.login') }}">Already have an account?</a>
+  </form>
+</div>
+{% endblock %}

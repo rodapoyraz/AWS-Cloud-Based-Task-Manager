@@ -11,12 +11,12 @@
       <option value="">-- Choose user --</option>
       {% for u in users %}
         <option value="{{ u.id }}">
-          {{ u.id }}
+          {{ u.user_code or u.id }}
         </option>
       {% endfor %}
     </select>
     <div class="form-text">
-      Only user ID is shown. Email is hidden internally.
+      Friendly IDs show once existing users have <code>user_code</code> set in Cosmos.
     </div>
   </div>
 
