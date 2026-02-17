@@ -43,14 +43,13 @@ class CosmosService:
     # Users
     # -------------------
     def create_user(self, email: str, password_hash: str, user_code: str) -> dict:
-     user = {
-        "id": str(uuid.uuid4()),
-        "email": email.lower().strip(),
-        "password_hash": password_hash,
-        "user_code": user_code.strip().lower()
-    }
-     return self.users.create_item(user)
-
+        user = {
+            "id": str(uuid.uuid4()),
+            "email": email.lower().strip(),
+            "password_hash": password_hash,
+            "user_code": user_code.strip().lower(),
+        }
+        return self.users.create_item(user)
 
     def get_user_by_id(self, user_id: str) -> Optional[dict]:
         try:
@@ -64,8 +63,22 @@ class CosmosService:
         items = list(self.users.query_items(query=q, parameters=params, enable_cross_partition_query=True))
         return items[0] if items else None
 
+    def get_user_by_code(self, user_code: str) -> Optional[dict]:
+        q = "SELECT TOP 1 * FROM c WHERE c.user_code = @code"
+        params = [{"name": "@code", "value": user_code.strip().lower()}]
+        items = list(self.users.query_items(query=q, parameters=params, enable_cross_partition_query=True))
+        return items[0] if items else None
+
+    def list_users(self):
+        # UI needs (id + user_code). user_code may be null for older users until you update docs.
+        query = "SELECT c.id, c.user_code FROM c"
+        return list(self.users.query_items(
+            query=query,
+            enable_cross_partition_query=True
+        ))
+
     # -------------------
-    # Tasks (per-user)
+    # Tasks
     # -------------------
     def create_task(self, task_data: dict) -> dict:
         task_data = dict(task_data)
@@ -92,14 +105,6 @@ class CosmosService:
         except CosmosResourceNotFoundError:
             return False
 
-
-    def list_users(self) -> List[Dict]:
-        query = "SELECT c.id, c.email FROM c"
-        return list(self.users.query_items(
-            query=query,
-            enable_cross_partition_query=True
-        ))
-
     def list_tasks(
         self,
         owner_id: str,
@@ -110,6 +115,10 @@ class CosmosService:
         sort: Optional[str] = None,
         order: str = "asc"
     ) -> Tuple[List[Dict], int]:
+        """
+        Owner-only list (kept for compatibility).
+        Your routes use a broader OR query (owner or assignee) directly on cosmos.tasks.
+        """
         where = ["c.owner_id = @owner_id"]
         params = [{"name": "@owner_id", "value": owner_id}]
 
@@ -137,16 +146,5 @@ class CosmosService:
 
         items = list(self.tasks.query_items(items_query, items_params, enable_cross_partition_query=True))
         total = list(self.tasks.query_items(count_query, params, enable_cross_partition_query=True))[0]
-
+        
         return items, int(total)
-
-    def get_user_by_code(self, user_code: str) -> Optional[dict]:
-        q = "SELECT TOP 1 * FROM c WHERE c.user_code = @code"
-        params = [{"name": "@code", "value": user_code.strip().lower()}]
-        items = list(self.users.query_items(query=q, parameters=params, enable_cross_partition_query=True))
-        return items[0] if items else None
-
-    def list_users(self) -> List[Dict]:
-        # show only friendly id + internal uuid
-        query = "SELECT c.id, c.user_code FROM c"
-        return list(self.users.query_items(query=query, enable_cross_partition_query=True))
