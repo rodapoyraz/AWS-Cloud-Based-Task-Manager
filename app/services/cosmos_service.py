@@ -86,6 +86,14 @@ class CosmosService:
         except CosmosResourceNotFoundError:
             return False
 
+
+    def list_users(self) -> List[Dict]:
+        query = "SELECT c.id, c.email FROM c"
+        return list(self.users.query_items(
+            query=query,
+            enable_cross_partition_query=True
+        ))
+
     def list_tasks(
         self,
         owner_id: str,

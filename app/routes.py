@@ -597,48 +597,46 @@ def ui_delete_task(task_id):
 @login_required
 def ui_assign(task_id):
     cosmos = CosmosService()
-    task, err = ensure_can_edit(cosmos, task_id)
-    if err:
+    task = cosmos.get_task(task_id)
+
+    if not task or task.get("owner_id") != current_user.id:
         flash("Task not found.", "danger")
         return redirect(url_for("routes.ui_tasks"))
 
+    users = cosmos.list_users()
+
     if request.method == "POST":
-        assignee_id = (request.form.get("assignee_id") or "").strip()
-        if not assignee_id:
-            flash("Assignee ID is required.", "danger")
-            return redirect(request.url)
+        assignee_id = request.form.get("assignee_id")
 
         assignee = cosmos.get_user_by_id(assignee_id)
         if not assignee:
-            flash("User not found (invalid ID).", "danger")
+            flash("User not found.", "danger")
             return redirect(request.url)
 
         cosmos.update_task(task_id, {"assignee_id": assignee_id})
         flash("Task assigned.", "success")
 
-        # Send email (if configured)
+        # Email
         email_service = EmailService()
         if email_service.is_configured():
-            subject = f"You were assigned a task: {task.get('title','(no title)')}"
-            body = (
-                f"Hi!\n\n"
-                f"You have been assigned a task.\n\n"
-                f"Title: {task.get('title','')}\n"
-                f"Description: {task.get('description','')}\n"
-                f"Priority: {task.get('priority','')}\n"
-                f"Status: {task.get('status','')}\n"
-                f"Deadline: {task.get('deadline','')}\n\n"
-                f"Task ID: {task.get('id')}\n"
-            )
+            subject = f"You were assigned a task: {task.get('title','')}"
+            body = f"""
+You were assigned a task.
+
+Title: {task.get('title')}
+Description: {task.get('description')}
+Priority: {task.get('priority')}
+Status: {task.get('status')}
+Deadline: {task.get('deadline')}
+"""
             try:
                 email_service.send(assignee["email"], subject, body)
-                flash("Email sent to assignee.", "info")
+                flash("Email sent.", "info")
             except Exception:
-                current_app.logger.exception("Failed to send assignment email")
-                flash("Assigned, but email failed to send (check logs).", "warning")
-        else:
-            flash("Assigned (email not configured).", "warning")
+                current_app.logger.exception("Email failed")
+                flash("Assigned but email failed.", "warning")
 
         return redirect(url_for("routes.ui_tasks"))
 
-    return render_template("assign.html", task_id=task_id)
+    return render_template("assign.html", task_id=task_id, users=users)
+
