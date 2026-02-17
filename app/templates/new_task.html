@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}New Task{% endblock %}
+
+{% block content %}
+<h1 class="h3 mb-3">Create task</h1>
+
+<form method="post" class="card p-3">
+  <div class="mb-2">
+    <label class="form-label">Title</label>
+    <input class="form-control" name="title" required>
+  </div>
+
+  <div class="mb-2">
+    <label class="form-label">Description</label>
+    <textarea class="form-control" name="description"></textarea>
+  </div>
+
+  <div class="row">
+    <div class="col-md-3 mb-2">
+      <label class="form-label">Status</label>
+      <select class="form-select" name="status">
+        <option value="todo">todo</option>
+        <option value="in_progress">in_progress</option>
+        <option value="done">done</option>
+      </select>
+    </div>
+
+    <div class="col-md-3 mb-2">
+      <label class="form-label">Priority</label>
+      <select class="form-select" name="priority">
+        <option value="low">low</option>
+        <option value="medium" selected>medium</option>
+        <option value="high">high</option>
+      </select>
+    </div>
+
+    <div class="col-md-6 mb-2">
+      <label class="form-label">Deadline</label>
+      <input class="form-control" name="deadline" placeholder="YYYY-MM-DD">
+    </div>
+  </div>
+
+  <div class="d-flex gap-2">
+    <button class="btn btn-primary">Create</button>
+    <a class="btn btn-outline-secondary" href="{{ url_for('routes.ui_tasks') }}">Cancel</a>
+  </div>
+</form>
+{% endblock %}
