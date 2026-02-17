@@ -7,10 +7,12 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from app.auth_models import User
 from app.services.cosmos_service import CosmosService
 from app.services.blob_service import BlobService
+from app.services.email_service import EmailService
 from app.utils.api import ok, fail
 
 bp = Blueprint("routes", __name__)
 
+# Fields returned to API callers / UI tables (intentionally hide owner_id + assignee_id by default)
 TASK_FIELDS = {"id", "title", "description", "status", "priority", "deadline", "file_url"}
 
 ALLOWED_STATUSES = {"todo", "in_progress", "done"}
@@ -87,27 +89,78 @@ def require_api_token():
     return None
 
 
-def ensure_owns_task(cosmos: CosmosService, task_id: str):
-    """
-    Returns (task, error_response). If not found OR not owned by current user -> 404.
-    """
+def can_view_task(task: dict, user_id: str) -> bool:
+    """Owner OR assignee can view."""
+    return task.get("owner_id") == user_id or task.get("assignee_id") == user_id
+
+
+def can_edit_task(task: dict, user_id: str) -> bool:
+    """Only owner can edit/delete/assign."""
+    return task.get("owner_id") == user_id
+
+
+def ensure_can_view(cosmos: CosmosService, task_id: str):
     task = cosmos.get_task(task_id)
-    if not task or task.get("owner_id") != current_user.id:
+    if not task or not can_view_task(task, current_user.id):
         return None, fail("Task not found.", 404)
     return task, None
 
 
+def ensure_can_edit(cosmos: CosmosService, task_id: str):
+    task = cosmos.get_task(task_id)
+    if not task or not can_edit_task(task, current_user.id):
+        return None, fail("Task not found.", 404)
+    return task, None
+
+
+def list_visible_tasks(cosmos: CosmosService, user_id: str, status=None, priority=None,
+                       limit: int = 20, offset: int = 0, sort=None, order: str = "asc"):
+    """
+    Visible tasks = tasks where (owner_id == user_id OR assignee_id == user_id)
+    Implemented directly against cosmos.tasks container so we don't have to change CosmosService.
+    Returns (items, total)
+    """
+    where = ["(c.owner_id = @uid OR c.assignee_id = @uid)"]
+    params = [{"name": "@uid", "value": user_id}]
+
+    if status:
+        where.append("c.status = @status")
+        params.append({"name": "@status", "value": status})
+    if priority:
+        where.append("c.priority = @priority")
+        params.append({"name": "@priority", "value": priority})
+
+    where_sql = "WHERE " + " AND ".join(where)
+
+    order_sql = ""
+    if sort:
+        direction = "DESC" if order == "desc" else "ASC"
+        order_sql = f" ORDER BY c.{sort} {direction}"
+
+    items_query = f"SELECT * FROM c {where_sql}{order_sql} OFFSET @offset LIMIT @limit"
+    items_params = params + [{"name": "@offset", "value": offset}, {"name": "@limit", "value": limit}]
+
+    count_query = f"SELECT VALUE COUNT(1) FROM c {where_sql}"
+
+    items = list(cosmos.tasks.query_items(items_query, items_params, enable_cross_partition_query=True))
+    total = list(cosmos.tasks.query_items(count_query, params, enable_cross_partition_query=True))[0]
+
+    return items, int(total)
+
+
 # -------------------------
-# Public route
+# Home
 # -------------------------
 
 @bp.route("/")
 def home():
-    return ok({"message": "Team Task Manager API running"})
+    if current_user.is_authenticated:
+        return redirect(url_for("routes.ui_tasks"))
+    return render_template("home.html")
 
 
 # -------------------------
-# Auth routes (UI)
+# Auth (UI)
 # -------------------------
 
 @bp.route("/register", methods=["GET", "POST"])
@@ -172,7 +225,7 @@ def logout():
 
 
 # -------------------------
-# API routes (login required + per-user isolation)
+# API (login required + assignee visibility)
 # -------------------------
 
 @bp.route("/tasks", methods=["POST"])
@@ -204,6 +257,7 @@ def create_task():
         "deadline": data.get("deadline"),
         "file_url": None,
         "owner_id": current_user.id,
+        "assignee_id": None,
     }
 
     try:
@@ -236,8 +290,9 @@ def list_tasks():
 
     try:
         cosmos = CosmosService()
-        items, total = cosmos.list_tasks(
-            owner_id=current_user.id,
+        items, total = list_visible_tasks(
+            cosmos=cosmos,
+            user_id=current_user.id,
             status=status,
             priority=priority,
             limit=limit,
@@ -271,7 +326,7 @@ def get_task(task_id):
 
     try:
         cosmos = CosmosService()
-        task, err = ensure_owns_task(cosmos, task_id)
+        task, err = ensure_can_view(cosmos, task_id)
         if err:
             return err
         return ok(serialize_task(task))
@@ -289,22 +344,29 @@ def update_task(task_id):
 
     data = request.form.to_dict() if request.form else (request.get_json(silent=True) or {})
 
-    allowed_updates = {"title", "description", "status", "priority", "deadline"}
-    updates = {k: v for k, v in data.items() if k in allowed_updates}
-
-    if not updates:
-        return fail("No valid fields provided for update.", 400)
-
-    if "status" in updates and updates["status"] not in ALLOWED_STATUSES:
-        return fail(f"Invalid status. Allowed: {sorted(ALLOWED_STATUSES)}", 400)
-    if "priority" in updates and updates["priority"] not in ALLOWED_PRIORITIES:
-        return fail(f"Invalid priority. Allowed: {sorted(ALLOWED_PRIORITIES)}", 400)
+    # Owner can update all of these. Assignee can update ONLY status.
+    owner_allowed = {"title", "description", "status", "priority", "deadline"}
+    assignee_allowed = {"status"}
 
     try:
         cosmos = CosmosService()
-        _, err = ensure_owns_task(cosmos, task_id)
+        task, err = ensure_can_view(cosmos, task_id)
         if err:
             return err
+
+        if can_edit_task(task, current_user.id):
+            allowed = owner_allowed
+        else:
+            allowed = assignee_allowed
+
+        updates = {k: v for k, v in data.items() if k in allowed}
+        if not updates:
+            return fail("No valid fields provided for update.", 400)
+
+        if "status" in updates and updates["status"] not in ALLOWED_STATUSES:
+            return fail(f"Invalid status. Allowed: {sorted(ALLOWED_STATUSES)}", 400)
+        if "priority" in updates and updates["priority"] not in ALLOWED_PRIORITIES:
+            return fail(f"Invalid priority. Allowed: {sorted(ALLOWED_PRIORITIES)}", 400)
 
         updated = cosmos.update_task(task_id, updates)
         return ok(serialize_task(updated), message="Task updated.")
@@ -331,7 +393,7 @@ def upload_file(task_id):
 
     try:
         cosmos = CosmosService()
-        _, err = ensure_owns_task(cosmos, task_id)
+        task, err = ensure_can_view(cosmos, task_id)
         if err:
             return err
 
@@ -346,15 +408,8 @@ def upload_file(task_id):
 
 
 # -------------------------
-# UI routes (login required + per-user isolation)
+# UI (login required + assignee visibility)
 # -------------------------
-
-@bp.route("/")
-def home():
-    if current_user.is_authenticated:
-        return redirect(url_for("routes.ui_tasks"))
-    return render_template("home.html")
-
 
 @bp.route("/ui/tasks", methods=["GET"])
 @login_required
@@ -365,8 +420,9 @@ def ui_tasks():
 
     cosmos = CosmosService()
     try:
-        items, total = cosmos.list_tasks(
-            owner_id=current_user.id,
+        items, total = list_visible_tasks(
+            cosmos=cosmos,
+            user_id=current_user.id,
             status=status,
             priority=priority,
             limit=limit,
@@ -403,7 +459,6 @@ def ui_new_task():
         if status not in ALLOWED_STATUSES:
             flash("Invalid status.", "danger")
             return redirect(request.url)
-
         if priority not in ALLOWED_PRIORITIES:
             flash("Invalid priority.", "danger")
             return redirect(request.url)
@@ -416,7 +471,8 @@ def ui_new_task():
             "priority": priority,
             "deadline": data.get("deadline"),
             "file_url": None,
-            "owner_id": current_user.id
+            "owner_id": current_user.id,
+            "assignee_id": None,
         })
 
         flash("Task created.", "success")
@@ -433,7 +489,7 @@ def ui_set_status(task_id, status):
         return redirect(url_for("routes.ui_tasks"))
 
     cosmos = CosmosService()
-    task, err = ensure_owns_task(cosmos, task_id)
+    task, err = ensure_can_view(cosmos, task_id)
     if err:
         flash("Task not found.", "danger")
         return redirect(url_for("routes.ui_tasks"))
@@ -447,7 +503,7 @@ def ui_set_status(task_id, status):
 @login_required
 def ui_upload(task_id):
     cosmos = CosmosService()
-    task, err = ensure_owns_task(cosmos, task_id)
+    task, err = ensure_can_view(cosmos, task_id)
     if err:
         flash("Task not found.", "danger")
         return redirect(url_for("routes.ui_tasks"))
@@ -472,3 +528,117 @@ def ui_upload(task_id):
         return redirect(url_for("routes.ui_tasks"))
 
     return render_template("upload.html", task_id=task_id)
+
+
+@bp.route("/ui/tasks/<task_id>/edit", methods=["GET", "POST"])
+@login_required
+def ui_edit_task(task_id):
+    cosmos = CosmosService()
+    task, err = ensure_can_edit(cosmos, task_id)
+    if err:
+        flash("Task not found.", "danger")
+        return redirect(url_for("routes.ui_tasks"))
+
+    if request.method == "POST":
+        data = request.form.to_dict()
+
+        title = (data.get("title") or "").strip()
+        if not title:
+            flash("Title is required.", "danger")
+            return redirect(request.url)
+
+        status = data.get("status", task.get("status"))
+        priority = data.get("priority", task.get("priority"))
+
+        if status not in ALLOWED_STATUSES:
+            flash("Invalid status.", "danger")
+            return redirect(request.url)
+        if priority not in ALLOWED_PRIORITIES:
+            flash("Invalid priority.", "danger")
+            return redirect(request.url)
+
+        updates = {
+            "title": title,
+            "description": (data.get("description") or "").strip(),
+            "status": status,
+            "priority": priority,
+            "deadline": data.get("deadline"),
+        }
+
+        cosmos.update_task(task_id, updates)
+        flash("Task updated.", "success")
+        return redirect(url_for("routes.ui_tasks"))
+
+    view_task = {
+        "title": task.get("title", ""),
+        "description": task.get("description", ""),
+        "status": task.get("status", "todo"),
+        "priority": task.get("priority", "medium"),
+        "deadline": task.get("deadline", ""),
+    }
+    return render_template("edit_task.html", task=view_task)
+
+
+@bp.route("/ui/tasks/<task_id>/delete", methods=["POST"])
+@login_required
+def ui_delete_task(task_id):
+    cosmos = CosmosService()
+    task, err = ensure_can_edit(cosmos, task_id)
+    if err:
+        flash("Task not found.", "danger")
+        return redirect(url_for("routes.ui_tasks"))
+
+    cosmos.delete_task(task_id)
+    flash("Task deleted.", "success")
+    return redirect(url_for("routes.ui_tasks"))
+
+
+@bp.route("/ui/tasks/<task_id>/assign", methods=["GET", "POST"])
+@login_required
+def ui_assign(task_id):
+    cosmos = CosmosService()
+    task, err = ensure_can_edit(cosmos, task_id)
+    if err:
+        flash("Task not found.", "danger")
+        return redirect(url_for("routes.ui_tasks"))
+
+    if request.method == "POST":
+        assignee_id = (request.form.get("assignee_id") or "").strip()
+        if not assignee_id:
+            flash("Assignee ID is required.", "danger")
+            return redirect(request.url)
+
+        assignee = cosmos.get_user_by_id(assignee_id)
+        if not assignee:
+            flash("User not found (invalid ID).", "danger")
+            return redirect(request.url)
+
+        cosmos.update_task(task_id, {"assignee_id": assignee_id})
+        flash("Task assigned.", "success")
+
+        # Send email (if configured)
+        email_service = EmailService()
+        if email_service.is_configured():
+            subject = f"You were assigned a task: {task.get('title','(no title)')}"
+            body = (
+                f"Hi!\n\n"
+                f"You have been assigned a task.\n\n"
+                f"Title: {task.get('title','')}\n"
+                f"Description: {task.get('description','')}\n"
+                f"Priority: {task.get('priority','')}\n"
+                f"Status: {task.get('status','')}\n"
+                f"Deadline: {task.get('deadline','')}\n\n"
+                f"Task ID: {task.get('id')}\n"
+            )
+            try:
+                email_service.send(assignee["email"], subject, body)
+                flash("Email sent to assignee.", "info")
+            except Exception:
+                current_app.logger.exception("Failed to send assignment email")
+                flash("Assigned, but email failed to send (check logs).", "warning")
+        else:
+            flash("Assigned (email not configured).", "warning")
+
+        return redirect(url_for("routes.ui_tasks"))
+
+    return render_template("assign.html", task_id=task_id)

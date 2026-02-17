@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Home{% endblock %}
+{% block content %}
+<div class="card p-4" style="max-width:520px;">
+  <h1 class="h4 mb-3">Task Manager</h1>
+  <p class="text-muted mb-4">Please log in or create an account to manage your tasks.</p>
+
+  <div class="d-flex gap-2">
+    <a class="btn btn-primary" href="{{ url_for('routes.login') }}">Login</a>
+    <a class="btn btn-outline-primary" href="{{ url_for('routes.register') }}">Register</a>
+  </div>
+</div>
+{% endblock %}
