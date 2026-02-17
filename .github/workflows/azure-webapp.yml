@@ -28,7 +28,7 @@ jobs:
 
       - name: Smoke test (import wsgi)
         run: |
-          python -c "from wsgi import app; print('WSGI import OK')"
+          PYTHONPATH=".python_packages/lib/site-packages" python -c "from wsgi import app; print('WSGI import OK')"
 
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
