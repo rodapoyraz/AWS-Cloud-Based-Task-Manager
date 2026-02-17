@@ -1,10 +1,13 @@
-# app/routes.py
+
 from flask import Blueprint, request, current_app, render_template, redirect, url_for, flash
 from werkzeug.utils import secure_filename
 
 from app.services.cosmos_service import CosmosService
 from app.services.blob_service import BlobService
 from app.utils.api import ok, fail
+
+current_app_logger = None
+
 
 bp = Blueprint("routes", __name__)
 
