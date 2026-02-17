@@ -8,6 +8,8 @@ class Config:
     COSMOS_DB_NAME = os.getenv("COSMOS_DB_NAME")
     COSMOS_CONTAINER_NAME = os.getenv("COSMOS_CONTAINER_NAME")
     COSMOS_PARTITION_KEY = os.getenv("COSMOS_PARTITION_KEY", "/id")
+    # Cosmos Users Container
+    COSMOS_USERS_CONTAINER_NAME = os.getenv("COSMOS_USERS_CONTAINER_NAME", "users")
 
     # Blob
     BLOB_CONNECTION_STRING = os.getenv("BLOB_CONNECTION_STRING")

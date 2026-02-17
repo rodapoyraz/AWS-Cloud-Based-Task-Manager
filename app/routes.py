@@ -1,13 +1,13 @@
-
 from flask import Blueprint, request, current_app, render_template, redirect, url_for, flash
 from werkzeug.utils import secure_filename
 
+from flask_login import login_required, login_user, logout_user, current_user
+from werkzeug.security import generate_password_hash, check_password_hash
+
+from app.auth_models import User
 from app.services.cosmos_service import CosmosService
 from app.services.blob_service import BlobService
 from app.utils.api import ok, fail
-
-current_app_logger = None
-
 
 bp = Blueprint("routes", __name__)
 
@@ -67,32 +67,38 @@ def validate_sorting(args):
     return sort, order, None
 
 
-# -------------------------
-# Simple token auth
-# -------------------------
-
 def require_api_token():
+    """
+    Optional extra protection for API routes.
+    If API_TOKEN is set, require Bearer token header even if user is logged in.
+    """
     token = current_app.config.get("API_TOKEN")
-
-    # If no token configured → allow (local dev mode)
     if not token:
         return None
 
     header = request.headers.get("Authorization", "")
-
     if not header.startswith("Bearer "):
         return fail("Missing or invalid Authorization header.", 401)
 
     incoming = header.split(" ", 1)[1].strip()
-
     if incoming != token:
         return fail("Unauthorized.", 401)
 
     return None
 
 
+def ensure_owns_task(cosmos: CosmosService, task_id: str):
+    """
+    Returns (task, error_response). If not found OR not owned by current user -> 404.
+    """
+    task = cosmos.get_task(task_id)
+    if not task or task.get("owner_id") != current_user.id:
+        return None, fail("Task not found.", 404)
+    return task, None
+
+
 # -------------------------
-# Routes
+# Public route
 # -------------------------
 
 @bp.route("/")
@@ -100,7 +106,77 @@ def home():
     return ok({"message": "Team Task Manager API running"})
 
 
+# -------------------------
+# Auth routes (UI)
+# -------------------------
+
+@bp.route("/register", methods=["GET", "POST"])
+def register():
+    if current_user.is_authenticated:
+        return redirect(url_for("routes.ui_tasks"))
+
+    if request.method == "POST":
+        email = (request.form.get("email") or "").strip().lower()
+        password = request.form.get("password") or ""
+
+        if not email or not password:
+            flash("Email and password are required.", "danger")
+            return redirect(request.url)
+
+        cosmos = CosmosService()
+        if cosmos.get_user_by_email(email):
+            flash("Email already registered.", "danger")
+            return redirect(request.url)
+
+        pw_hash = generate_password_hash(password)
+        created = cosmos.create_user(email=email, password_hash=pw_hash)
+
+        user = User.from_cosmos(created)
+        login_user(user)
+        flash("Account created. You're logged in.", "success")
+        return redirect(url_for("routes.ui_tasks"))
+
+    return render_template("register.html")
+
+
+@bp.route("/login", methods=["GET", "POST"])
+def login():
+    if current_user.is_authenticated:
+        return redirect(url_for("routes.ui_tasks"))
+
+    if request.method == "POST":
+        email = (request.form.get("email") or "").strip().lower()
+        password = request.form.get("password") or ""
+
+        cosmos = CosmosService()
+        data = cosmos.get_user_by_email(email)
+
+        if not data or not check_password_hash(data.get("password_hash", ""), password):
+            flash("Invalid credentials.", "danger")
+            return redirect(request.url)
+
+        user = User.from_cosmos(data)
+        login_user(user)
+        flash("Logged in.", "success")
+        return redirect(url_for("routes.ui_tasks"))
+
+    return render_template("login.html")
+
+
+@bp.route("/logout", methods=["POST"])
+@login_required
+def logout():
+    logout_user()
+    flash("Logged out.", "success")
+    return redirect(url_for("routes.login"))
+
+
+# -------------------------
+# API routes (login required + per-user isolation)
+# -------------------------
+
 @bp.route("/tasks", methods=["POST"])
+@login_required
 def create_task():
     auth_err = require_api_token()
     if auth_err:
@@ -117,7 +193,6 @@ def create_task():
 
     if status not in ALLOWED_STATUSES:
         return fail(f"Invalid status. Allowed: {sorted(ALLOWED_STATUSES)}", 400)
-
     if priority not in ALLOWED_PRIORITIES:
         return fail(f"Invalid priority. Allowed: {sorted(ALLOWED_PRIORITIES)}", 400)
 
@@ -128,19 +203,20 @@ def create_task():
         "priority": priority,
         "deadline": data.get("deadline"),
         "file_url": None,
+        "owner_id": current_user.id,
     }
 
     try:
         cosmos = CosmosService()
         created = cosmos.create_task(task)
         return ok(serialize_task(created), message="Task created.", status=201)
-
     except Exception:
         current_app.logger.exception("Failed to create task")
         return fail("Internal server error.", 500)
 
 
 @bp.route("/tasks", methods=["GET"])
+@login_required
 def list_tasks():
     auth_err = require_api_token()
     if auth_err:
@@ -160,9 +236,8 @@ def list_tasks():
 
     try:
         cosmos = CosmosService()
-
-        # Preferred: implement filtering/pagination/sorting inside Cosmos
         items, total = cosmos.list_tasks(
+            owner_id=current_user.id,
             status=status,
             priority=priority,
             limit=limit,
@@ -170,27 +245,6 @@ def list_tasks():
             sort=sort,
             order=order
         )
-
-    except AttributeError:
-        # Fallback (in-memory filtering for demo projects)
-        cosmos = CosmosService()
-        all_items = cosmos.get_all_tasks()
-
-        filtered = all_items
-
-        if status:
-            filtered = [t for t in filtered if t.get("status") == status]
-
-        if priority:
-            filtered = [t for t in filtered if t.get("priority") == priority]
-
-        if sort:
-            reverse = order == "desc"
-            filtered.sort(key=lambda x: x.get(sort) or "", reverse=reverse)
-
-        total = len(filtered)
-        items = filtered[offset:offset + limit]
-
     except Exception:
         current_app.logger.exception("Failed to list tasks")
         return fail("Internal server error.", 500)
@@ -203,18 +257,13 @@ def list_tasks():
             "total": total,
             "has_more": (offset + limit) < total
         },
-        "filters": {
-            "status": status,
-            "priority": priority
-        },
-        "sorting": {
-            "sort": sort,
-            "order": order
-        }
+        "filters": {"status": status, "priority": priority},
+        "sorting": {"sort": sort, "order": order}
     })
 
 
 @bp.route("/tasks/<task_id>", methods=["GET"])
+@login_required
 def get_task(task_id):
     auth_err = require_api_token()
     if auth_err:
@@ -222,19 +271,17 @@ def get_task(task_id):
 
     try:
         cosmos = CosmosService()
-        item = cosmos.get_task(task_id)
-
-        if not item:
-            return fail("Task not found.", 404)
-
-        return ok(serialize_task(item))
-
+        task, err = ensure_owns_task(cosmos, task_id)
+        if err:
+            return err
+        return ok(serialize_task(task))
     except Exception:
         current_app.logger.exception("Failed to get task")
         return fail("Internal server error.", 500)
 
 
 @bp.route("/tasks/<task_id>", methods=["PATCH"])
+@login_required
 def update_task(task_id):
     auth_err = require_api_token()
     if auth_err:
@@ -250,25 +297,24 @@ def update_task(task_id):
 
     if "status" in updates and updates["status"] not in ALLOWED_STATUSES:
         return fail(f"Invalid status. Allowed: {sorted(ALLOWED_STATUSES)}", 400)
-
     if "priority" in updates and updates["priority"] not in ALLOWED_PRIORITIES:
         return fail(f"Invalid priority. Allowed: {sorted(ALLOWED_PRIORITIES)}", 400)
 
     try:
         cosmos = CosmosService()
+        _, err = ensure_owns_task(cosmos, task_id)
+        if err:
+            return err
+
         updated = cosmos.update_task(task_id, updates)
-
-        if not updated:
-            return fail("Task not found.", 404)
-
         return ok(serialize_task(updated), message="Task updated.")
-
     except Exception:
         current_app.logger.exception("Failed to update task")
         return fail("Internal server error.", 500)
 
 
 @bp.route("/tasks/<task_id>/upload", methods=["POST"])
+@login_required
 def upload_file(task_id):
     auth_err = require_api_token()
     if auth_err:
@@ -278,30 +324,33 @@ def upload_file(task_id):
         return fail("Missing file field 'file'.", 400)
 
     f = request.files["file"]
-
     if not f.filename:
         return fail("Empty filename.", 400)
 
     filename = secure_filename(f.filename)
 
     try:
+        cosmos = CosmosService()
+        _, err = ensure_owns_task(cosmos, task_id)
+        if err:
+            return err
+
         blob = BlobService()
         file_url = blob.upload_file(f, filename)
 
-        cosmos = CosmosService()
         updated = cosmos.update_task(task_id, {"file_url": file_url})
-
-        if not updated:
-            return fail("Task not found.", 404)
-
         return ok(serialize_task(updated), message="File uploaded.")
-
     except Exception:
         current_app.logger.exception("Failed to upload file")
         return fail("Internal server error.", 500)
 
 
+# -------------------------
+# UI routes (login required + per-user isolation)
+# -------------------------
+
 @bp.route("/ui/tasks", methods=["GET"])
+@login_required
 def ui_tasks():
     status, priority, _ = validate_filters(request.args)
     limit, offset, _ = parse_pagination(request.args)
@@ -310,6 +359,7 @@ def ui_tasks():
     cosmos = CosmosService()
     try:
         items, total = cosmos.list_tasks(
+            owner_id=current_user.id,
             status=status,
             priority=priority,
             limit=limit,
@@ -330,6 +380,7 @@ def ui_tasks():
 
 
 @bp.route("/ui/tasks/new", methods=["GET", "POST"])
+@login_required
 def ui_new_task():
     if request.method == "POST":
         data = request.form.to_dict()
@@ -357,7 +408,8 @@ def ui_new_task():
             "status": status,
             "priority": priority,
             "deadline": data.get("deadline"),
-            "file_url": None
+            "file_url": None,
+            "owner_id": current_user.id
         })
 
         flash("Task created.", "success")
@@ -367,23 +419,32 @@ def ui_new_task():
 
 
 @bp.route("/ui/tasks/<task_id>/status/<status>", methods=["POST"])
+@login_required
 def ui_set_status(task_id, status):
     if status not in ALLOWED_STATUSES:
         flash("Invalid status.", "danger")
         return redirect(url_for("routes.ui_tasks"))
 
     cosmos = CosmosService()
-    updated = cosmos.update_task(task_id, {"status": status})
-    if not updated:
+    task, err = ensure_owns_task(cosmos, task_id)
+    if err:
         flash("Task not found.", "danger")
-    else:
-        flash("Status updated.", "success")
+        return redirect(url_for("routes.ui_tasks"))
 
+    cosmos.update_task(task_id, {"status": status})
+    flash("Status updated.", "success")
     return redirect(url_for("routes.ui_tasks"))
 
 
 @bp.route("/ui/tasks/<task_id>/upload", methods=["GET", "POST"])
+@login_required
 def ui_upload(task_id):
+    cosmos = CosmosService()
+    task, err = ensure_owns_task(cosmos, task_id)
+    if err:
+        flash("Task not found.", "danger")
+        return redirect(url_for("routes.ui_tasks"))
+
     if request.method == "POST":
         if "file" not in request.files:
             flash("No file provided.", "danger")
@@ -399,13 +460,8 @@ def ui_upload(task_id):
         blob = BlobService()
         url = blob.upload_file(f, filename)
 
-        cosmos = CosmosService()
-        updated = cosmos.update_task(task_id, {"file_url": url})
-        if not updated:
-            flash("Task not found.", "danger")
-        else:
-            flash("File uploaded.", "success")
-
+        cosmos.update_task(task_id, {"file_url": url})
+        flash("File uploaded.", "success")
         return redirect(url_for("routes.ui_tasks"))
 
     return render_template("upload.html", task_id=task_id)
