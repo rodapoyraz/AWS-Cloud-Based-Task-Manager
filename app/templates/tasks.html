@@ -58,9 +58,13 @@
           <td>
             {% if t.file_url %}
               <a href="{{ t.file_url }}" target="_blank">open</a>
+            {% else %}
+              <span class="text-muted">—</span>
             {% endif %}
           </td>
+
           <td class="text-end">
+            <!-- Status buttons -->
             <form class="d-inline" method="post" action="{{ url_for('routes.ui_set_status', task_id=t.id, status='todo') }}">
               <button class="btn btn-sm btn-outline-secondary">ToDo</button>
             </form>
@@ -70,10 +74,28 @@
             <form class="d-inline" method="post" action="{{ url_for('routes.ui_set_status', task_id=t.id, status='done') }}">
               <button class="btn btn-sm btn-outline-success">Done</button>
             </form>
+
+            <!-- Upload -->
             <a class="btn btn-sm btn-outline-primary" href="{{ url_for('routes.ui_upload', task_id=t.id) }}">Upload</a>
+
+            <!-- Assign (by user id) -->
+            <a class="btn btn-sm btn-outline-primary" href="{{ url_for('routes.ui_assign', task_id=t.id) }}">Assign</a>
+
+            <!-- Edit -->
+            <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('routes.ui_edit_task', task_id=t.id) }}">Edit</a>
+
+            <!-- Delete -->
+            <form class="d-inline" method="post" action="{{ url_for('routes.ui_delete_task', task_id=t.id) }}">
+              <button class="btn btn-sm btn-outline-danger"
+                      onclick="return confirm('Delete this task?')"
+                      type="submit">
+                Delete
+              </button>
+            </form>
           </td>
         </tr>
         {% endfor %}
+
         {% if tasks|length == 0 %}
         <tr><td colspan="6" class="text-muted">No tasks found.</td></tr>
         {% endif %}

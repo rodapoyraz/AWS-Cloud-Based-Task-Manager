@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Edit task{% endblock %}
+{% block content %}
+<h1 class="h4 mb-3">Edit task</h1>
+
+<form method="post" class="card p-3" style="max-width:720px;">
+  <div class="mb-2">
+    <label class="form-label">Title</label>
+    <input class="form-control" name="title" value="{{ task.title }}" required>
+  </div>
+
+  <div class="mb-2">
+    <label class="form-label">Description</label>
+    <textarea class="form-control" name="description" rows="4">{{ task.description }}</textarea>
+  </div>
+
+  <div class="row">
+    <div class="col-md-4 mb-2">
+      <label class="form-label">Status</label>
+      <select class="form-select" name="status">
+        {% for s in ["todo","in_progress","done"] %}
+          <option value="{{ s }}" {% if task.status == s %}selected{% endif %}>{{ s }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="col-md-4 mb-2">
+      <label class="form-label">Priority</label>
+      <select class="form-select" name="priority">
+        {% for p in ["low","medium","high"] %}
+          <option value="{{ p }}" {% if task.priority == p %}selected{% endif %}>{{ p }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="col-md-4 mb-2">
+      <label class="form-label">Deadline</label>
+      <input class="form-control" name="deadline" value="{{ task.deadline or '' }}">
+    </div>
+  </div>
+
+  <div class="d-flex gap-2 mt-2">
+    <button class="btn btn-primary" type="submit">Save</button>
+    <a class="btn btn-outline-secondary" href="{{ url_for('routes.ui_tasks') }}">Cancel</a>
+  </div>
+</form>
+{% endblock %}

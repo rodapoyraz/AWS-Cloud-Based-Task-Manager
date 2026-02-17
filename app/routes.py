@@ -349,6 +349,13 @@ def upload_file(task_id):
 # UI routes (login required + per-user isolation)
 # -------------------------
 
+@bp.route("/")
+def home():
+    if current_user.is_authenticated:
+        return redirect(url_for("routes.ui_tasks"))
+    return render_template("home.html")
+
+
 @bp.route("/ui/tasks", methods=["GET"])
 @login_required
 def ui_tasks():

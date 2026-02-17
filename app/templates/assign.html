@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Assign task{% endblock %}
+{% block content %}
+<h1 class="h4 mb-3">Assign task</h1>
+
+<form method="post" class="card p-3" style="max-width:520px;">
+  <div class="mb-3">
+    <label class="form-label">Assignee user ID</label>
+    <input class="form-control" name="assignee_id" placeholder="Paste user ID here" required>
+    <div class="form-text">Only the ID is visible. We will look up the user email internally.</div>
+  </div>
+
+  <div class="d-flex gap-2">
+    <button class="btn btn-primary" type="submit">Assign</button>
+    <a class="btn btn-outline-secondary" href="{{ url_for('routes.ui_tasks') }}">Cancel</a>
+  </div>
+</form>
+{% endblock %}
