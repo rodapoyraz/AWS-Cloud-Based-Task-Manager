@@ -21,15 +21,18 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Build dependencies into .python_packages (for Azure)
+      # 1) Install dependencies INTO the folder that will be deployed
+      - name: Install dependencies into .python_packages
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt --target=".python_packages/lib/site-packages"
 
+      # 2) Smoke test using that folder
       - name: Smoke test (import wsgi)
         run: |
           PYTHONPATH=".python_packages/lib/site-packages" python -c "from wsgi import app; print('WSGI import OK')"
 
+      # 3) Deploy AFTER the folder exists
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
         with:
