@@ -4,6 +4,8 @@ from werkzeug.utils import secure_filename
 from flask_login import login_required, login_user, logout_user, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
 
+import re
+
 from app.auth_models import User
 from app.services.cosmos_service import CosmosService
 from app.services.blob_service import BlobService
@@ -12,7 +14,7 @@ from app.utils.api import ok, fail
 
 bp = Blueprint("routes", __name__)
 
-# Fields returned to API callers / UI tables (intentionally hide owner_id + assignee_id by default)
+# Hide owner_id / assignee_id in normal task payloads
 TASK_FIELDS = {"id", "title", "description", "status", "priority", "deadline", "file_url"}
 
 ALLOWED_STATUSES = {"todo", "in_progress", "done"}
@@ -117,7 +119,7 @@ def list_visible_tasks(cosmos: CosmosService, user_id: str, status=None, priorit
                        limit: int = 20, offset: int = 0, sort=None, order: str = "asc"):
     """
     Visible tasks = tasks where (owner_id == user_id OR assignee_id == user_id)
-    Implemented directly against cosmos.tasks container so we don't have to change CosmosService.
+    Implemented directly against cosmos.tasks container so we don't have to change CosmosService.list_tasks().
     Returns (items, total)
     """
     where = ["(c.owner_id = @uid OR c.assignee_id = @uid)"]
@@ -159,6 +161,11 @@ def home():
     return render_template("home.html")
 
 
+@bp.route("/api/health")
+def api_health():
+    return ok({"message": "Team Task Manager API running"})
+
+
 # -------------------------
 # Auth (UI)
 # -------------------------
@@ -169,20 +176,35 @@ def register():
         return redirect(url_for("routes.ui_tasks"))
 
     if request.method == "POST":
+        user_code = (request.form.get("user_code") or "").strip().lower()
         email = (request.form.get("email") or "").strip().lower()
         password = request.form.get("password") or ""
+
+        if not user_code:
+            flash("User ID is required.", "danger")
+            return redirect(request.url)
+
+        # 3–20 chars: a-z 0-9 _ -
+        if not re.fullmatch(r"[a-z0-9_-]{3,20}", user_code):
+            flash("User ID must be 3–20 chars: a-z, 0-9, _ or -", "danger")
+            return redirect(request.url)
 
         if not email or not password:
             flash("Email and password are required.", "danger")
             return redirect(request.url)
 
         cosmos = CosmosService()
+
         if cosmos.get_user_by_email(email):
             flash("Email already registered.", "danger")
             return redirect(request.url)
 
+        if cosmos.get_user_by_code(user_code):
+            flash("User ID already taken. Choose another.", "danger")
+            return redirect(request.url)
+
         pw_hash = generate_password_hash(password)
-        created = cosmos.create_user(email=email, password_hash=pw_hash)
+        created = cosmos.create_user(email=email, password_hash=pw_hash, user_code=user_code)
 
         user = User.from_cosmos(created)
         login_user(user)
@@ -354,11 +376,7 @@ def update_task(task_id):
         if err:
             return err
 
-        if can_edit_task(task, current_user.id):
-            allowed = owner_allowed
-        else:
-            allowed = assignee_allowed
-
+        allowed = owner_allowed if can_edit_task(task, current_user.id) else assignee_allowed
         updates = {k: v for k, v in data.items() if k in allowed}
         if not updates:
             return fail("No valid fields provided for update.", 400)
@@ -393,7 +411,7 @@ def upload_file(task_id):
 
     try:
         cosmos = CosmosService()
-        task, err = ensure_can_view(cosmos, task_id)
+        _, err = ensure_can_view(cosmos, task_id)
         if err:
             return err
 
@@ -489,7 +507,7 @@ def ui_set_status(task_id, status):
         return redirect(url_for("routes.ui_tasks"))
 
     cosmos = CosmosService()
-    task, err = ensure_can_view(cosmos, task_id)
+    _, err = ensure_can_view(cosmos, task_id)
     if err:
         flash("Task not found.", "danger")
         return redirect(url_for("routes.ui_tasks"))
@@ -503,7 +521,7 @@ def ui_set_status(task_id, status):
 @login_required
 def ui_upload(task_id):
     cosmos = CosmosService()
-    task, err = ensure_can_view(cosmos, task_id)
+    _, err = ensure_can_view(cosmos, task_id)
     if err:
         flash("Task not found.", "danger")
         return redirect(url_for("routes.ui_tasks"))
@@ -583,7 +601,7 @@ def ui_edit_task(task_id):
 @login_required
 def ui_delete_task(task_id):
     cosmos = CosmosService()
-    task, err = ensure_can_edit(cosmos, task_id)
+    _, err = ensure_can_edit(cosmos, task_id)
     if err:
         flash("Task not found.", "danger")
         return redirect(url_for("routes.ui_tasks"))
@@ -597,46 +615,50 @@ def ui_delete_task(task_id):
 @login_required
 def ui_assign(task_id):
     cosmos = CosmosService()
-    task = cosmos.get_task(task_id)
-
-    if not task or task.get("owner_id") != current_user.id:
+    task, err = ensure_can_edit(cosmos, task_id)
+    if err:
         flash("Task not found.", "danger")
         return redirect(url_for("routes.ui_tasks"))
 
     users = cosmos.list_users()
 
     if request.method == "POST":
-        assignee_id = request.form.get("assignee_id")
+        assignee_id = (request.form.get("assignee_id") or "").strip()
+        if not assignee_id:
+            flash("Assignee is required.", "danger")
+            return redirect(request.url)
 
         assignee = cosmos.get_user_by_id(assignee_id)
         if not assignee:
-            flash("User not found.", "danger")
+            flash("User not found (invalid ID).", "danger")
             return redirect(request.url)
 
         cosmos.update_task(task_id, {"assignee_id": assignee_id})
         flash("Task assigned.", "success")
 
-        # Email
+        # Email (if configured)
         email_service = EmailService()
         if email_service.is_configured():
-            subject = f"You were assigned a task: {task.get('title','')}"
-            body = f"""
-You were assigned a task.
-
-Title: {task.get('title')}
-Description: {task.get('description')}
-Priority: {task.get('priority')}
-Status: {task.get('status')}
-Deadline: {task.get('deadline')}
-"""
+            subject = f"You were assigned a task: {task.get('title','(no title)')}"
+            body = (
+                f"Hi!\n\n"
+                f"You have been assigned a task.\n\n"
+                f"Title: {task.get('title','')}\n"
+                f"Description: {task.get('description','')}\n"
+                f"Priority: {task.get('priority','')}\n"
+                f"Status: {task.get('status','')}\n"
+                f"Deadline: {task.get('deadline','')}\n\n"
+                f"Task ID: {task.get('id')}\n"
+            )
             try:
                 email_service.send(assignee["email"], subject, body)
-                flash("Email sent.", "info")
+                flash("Email sent to assignee.", "info")
             except Exception:
-                current_app.logger.exception("Email failed")
-                flash("Assigned but email failed.", "warning")
+                current_app.logger.exception("Failed to send assignment email")
+                flash("Assigned, but email failed to send (check logs).", "warning")
+        else:
+            flash("Assigned (email not configured).", "warning")
 
         return redirect(url_for("routes.ui_tasks"))
 
     return render_template("assign.html", task_id=task_id, users=users)
-

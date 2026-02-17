@@ -42,9 +42,15 @@ class CosmosService:
     # -------------------
     # Users
     # -------------------
-    def create_user(self, email: str, password_hash: str) -> dict:
-        user = {"id": str(uuid.uuid4()), "email": email.lower().strip(), "password_hash": password_hash}
-        return self.users.create_item(user)
+    def create_user(self, email: str, password_hash: str, user_code: str) -> dict:
+     user = {
+        "id": str(uuid.uuid4()),
+        "email": email.lower().strip(),
+        "password_hash": password_hash,
+        "user_code": user_code.strip().lower()
+    }
+     return self.users.create_item(user)
+
 
     def get_user_by_id(self, user_id: str) -> Optional[dict]:
         try:
@@ -133,3 +139,14 @@ class CosmosService:
         total = list(self.tasks.query_items(count_query, params, enable_cross_partition_query=True))[0]
 
         return items, int(total)
+
+    def get_user_by_code(self, user_code: str) -> Optional[dict]:
+        q = "SELECT TOP 1 * FROM c WHERE c.user_code = @code"
+        params = [{"name": "@code", "value": user_code.strip().lower()}]
+        items = list(self.users.query_items(query=q, parameters=params, enable_cross_partition_query=True))
+        return items[0] if items else None
+
+    def list_users(self) -> List[Dict]:
+        # show only friendly id + internal uuid
+        query = "SELECT c.id, c.user_code FROM c"
+        return list(self.users.query_items(query=query, enable_cross_partition_query=True))
