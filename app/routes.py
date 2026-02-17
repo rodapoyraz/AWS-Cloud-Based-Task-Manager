@@ -296,3 +296,113 @@ def upload_file(task_id):
     except Exception:
         current_app.logger.exception("Failed to upload file")
         return fail("Internal server error.", 500)
+
+
+@bp.route("/ui/tasks", methods=["GET"])
+def ui_tasks():
+    status, priority, _ = validate_filters(request.args)
+    limit, offset, _ = parse_pagination(request.args)
+    sort, order, _ = validate_sorting(request.args)
+
+    cosmos = CosmosService()
+    try:
+        items, total = cosmos.list_tasks(
+            status=status,
+            priority=priority,
+            limit=limit,
+            offset=offset,
+            sort=sort,
+            order=order
+        )
+    except Exception:
+        current_app.logger.exception("UI list failed")
+        items, total = [], 0
+
+    tasks = [serialize_task(i) for i in items]
+    pagination = {"limit": limit, "offset": offset, "total": total, "has_more": (offset + limit) < total}
+    filters = {"status": status, "priority": priority}
+    sorting = {"sort": sort, "order": order}
+
+    return render_template("tasks.html", tasks=tasks, pagination=pagination, filters=filters, sorting=sorting)
+
+
+@bp.route("/ui/tasks/new", methods=["GET", "POST"])
+def ui_new_task():
+    if request.method == "POST":
+        data = request.form.to_dict()
+
+        title = (data.get("title") or "").strip()
+        if not title:
+            flash("Title is required.", "danger")
+            return redirect(request.url)
+
+        status = data.get("status", "todo")
+        priority = data.get("priority", "medium")
+
+        if status not in ALLOWED_STATUSES:
+            flash("Invalid status.", "danger")
+            return redirect(request.url)
+
+        if priority not in ALLOWED_PRIORITIES:
+            flash("Invalid priority.", "danger")
+            return redirect(request.url)
+
+        cosmos = CosmosService()
+        cosmos.create_task({
+            "title": title,
+            "description": (data.get("description") or "").strip(),
+            "status": status,
+            "priority": priority,
+            "deadline": data.get("deadline"),
+            "file_url": None
+        })
+
+        flash("Task created.", "success")
+        return redirect(url_for("routes.ui_tasks"))
+
+    return render_template("new_task.html")
+
+
+@bp.route("/ui/tasks/<task_id>/status/<status>", methods=["POST"])
+def ui_set_status(task_id, status):
+    if status not in ALLOWED_STATUSES:
+        flash("Invalid status.", "danger")
+        return redirect(url_for("routes.ui_tasks"))
+
+    cosmos = CosmosService()
+    updated = cosmos.update_task(task_id, {"status": status})
+    if not updated:
+        flash("Task not found.", "danger")
+    else:
+        flash("Status updated.", "success")
+
+    return redirect(url_for("routes.ui_tasks"))
+
+
+@bp.route("/ui/tasks/<task_id>/upload", methods=["GET", "POST"])
+def ui_upload(task_id):
+    if request.method == "POST":
+        if "file" not in request.files:
+            flash("No file provided.", "danger")
+            return redirect(request.url)
+
+        f = request.files["file"]
+        if not f.filename:
+            flash("Empty filename.", "danger")
+            return redirect(request.url)
+
+        filename = secure_filename(f.filename)
+
+        blob = BlobService()
+        url = blob.upload_file(f, filename)
+
+        cosmos = CosmosService()
+        updated = cosmos.update_task(task_id, {"file_url": url})
+        if not updated:
+            flash("Task not found.", "danger")
+        else:
+            flash("File uploaded.", "success")
+
+        return redirect(url_for("routes.ui_tasks"))
+
+    return render_template("upload.html", task_id=task_id)
